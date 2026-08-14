@@ -1924,9 +1924,9 @@ function SetHotkeys(RunFunction, ControllerOne, ControllerTwo, Keyboard, Descrip
 	end
 	
 	if not IsVarSetTrue(ControllerOne) then ComboKeyPressed[RunFunction][1] = true
-	else RegisterKeyMapping("+" .. RunFunction .. "_cntrl_1" .. CONFIG.HOTKEY_VER, Description  .. " controller" .. Combo1Suffix, "pad_digitalbutton", ControllerOne) end
+	else RegisterKeyMapping("+" .. RunFunction .. "_cntrl_1" .. CONFIG.HOTKEY_VER, Description  .. " controller" .. Combo1Suffix, "pad_analogbutton", ControllerOne) end
 	if not IsVarSetTrue(ControllerTwo) then ComboKeyPressed[RunFunction][2] = true
-	else RegisterKeyMapping("+" .. RunFunction .. "_cntrl_2" .. CONFIG.HOTKEY_VER, Description .. " controller" .. Combo2Suffix, "pad_digitalbutton", ControllerTwo) end
+	else RegisterKeyMapping("+" .. RunFunction .. "_cntrl_2" .. CONFIG.HOTKEY_VER, Description .. " controller" .. Combo2Suffix, "pad_analogbutton", ControllerTwo) end
 	if IsVarSetTrue(Keyboard) then RegisterKeyMapping("+" .. RunFunction .. "_kb" .. CONFIG.HOTKEY_VER, Description .. " keyboard", "keyboard", Keyboard) end
 
 	RegisterCommand("+" .. RunFunction .. "_kb" .. CONFIG.HOTKEY_VER, function() RunHotkey(RunFunction, 3, false, OnlyRunIfClear) end, false)
