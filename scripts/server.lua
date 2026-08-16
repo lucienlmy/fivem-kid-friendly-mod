@@ -259,8 +259,16 @@ AddEventHandler('SpawnVehicle', function(Data)
 	local TeleportInside = Data and Data.teleport_inside == true
 	local RequestedSpeed = Data and IsFiniteNumber(Data.speed) and Data.speed or 0.0
 
-	if type(Data) ~= "table" or type(Data.coords) ~= "table" or not DoesEntityExist(PlayerPed) then
+	if type(Data) ~= "table" then
 		RejectVehicleSpawn(Player, "invalid vehicle spawn request.")
+		return
+	end
+	if Data.coords == nil then
+		RejectVehicleSpawn(Player, "vehicle spawn coordinates were not provided.")
+		return
+	end
+	if not DoesEntityExist(PlayerPed) then
+		RejectVehicleSpawn(Player, "player ped was not available for vehicle spawning.")
 		return
 	end
 

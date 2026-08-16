@@ -60,8 +60,21 @@ local CurrentLockHour = nil
 local ProcessedPeds = {}
 local ProcessedVehicles = {}
 local TemporaryRagdollBlocks = {}
+local FriendlyCarjackRequests = {}
+local NpcCrew = {}
+local NpcCrewGroup = 0
+local NpcCrewGroupCreated = false
 local RunPurgeProcessed = false
 local PlayerPassengerInVehicle = 0
+local PassengerDriverStyle = string.upper(tostring(CONFIG.VEHICLES.default_passenger_driver_style or "NORMAL"))
+local PassengerDriverStyleOrder = {"NORMAL", "CAREFUL", "BRISK", "RECKLESS"}
+local PassengerDriverStyles = {
+	NORMAL = {name = "Normal", speed = 18.0, driving_style = 786603, stop_range = 10.0, aggressiveness = 0.5, racing_modifier = 0.0},
+	CAREFUL = {name = "Careful", speed = 12.0, driving_style = 786603, stop_range = 12.0, aggressiveness = 0.0, racing_modifier = 0.0},
+	BRISK = {name = "Brisk", speed = 25.0, driving_style = 786603, stop_range = 10.0, aggressiveness = 0.5, racing_modifier = 0.5},
+	RECKLESS = {name = "Reckless", speed = 32.0, driving_style = 786468, stop_range = 10.0, aggressiveness = 1.0, racing_modifier = 1.0}
+}
+local PassengerDriverRoute = {vehicle = 0, has_waypoint = false, arrived = false, x = 0.0, y = 0.0, z = 0.0, style = ""}
 local TrustedPedModels = {}
 
 --------------------------------
@@ -87,6 +100,8 @@ function RunEveryX(S, ForceRunAtOne, NameIndex, FirstRunImmediate)
 end
 
 function SetPedInvincibleWithRagdoll(Ped, InvincibleFlag, RagdollFlag)
+	if InvincibleFlag then SetPedConfigFlag(Ped, 4, false) end -- CPED_CONFIG_FLAG_DrownsInSinkingVehicle
+
 	local SetInvincible = false
 	if InvincibleFlag and RagdollFlag.disable_all then
 		SetInvincible = true
@@ -122,12 +137,21 @@ function SetPedInvincibleWithRagdoll(Ped, InvincibleFlag, RagdollFlag)
 	SetEntityInvincible(Ped, SetInvincible)
 	
 	if not SetInvincible and not RagdollFlag.disable_all then
-		if RagdollFlag._prevent_when_shot then SetRagdollBlockingFlags(Ped, 1) end
-		if RagdollFlag._prevent_run_down then SetRagdollBlockingFlags(Ped, 2) end
+		if RagdollFlag._prevent_when_shot then
+			SetRagdollBlockingFlags(Ped, 1)
+			SetPedConfigFlag(Ped, 107, true) -- CPED_CONFIG_FLAG_DontActivateRagdollFromBulletImpact
+		end
+		if RagdollFlag._prevent_run_down then
+			SetRagdollBlockingFlags(Ped, 2)
+			SetPedConfigFlag(Ped, 106, true) -- CPED_CONFIG_FLAG_DontActivateRagdollFromVehicleImpact
+		end
+		if RagdollFlag._prevent_on_explosion then SetPedConfigFlag(Ped, 108, true) end -- CPED_CONFIG_FLAG_DontActivateRagdollFromExplosions
 		if RagdollFlag._prevent_on_fire then
 			SetRagdollBlockingFlags(Ped, 4)
+			SetPedConfigFlag(Ped, 109, true) -- CPED_CONFIG_FLAG_DontActivateRagdollFromFire
 			SetPedConfigFlag(Ped, 430, true) -- CPED_CONFIG_FLAG_IgnoreBeingOnFire
 		end
+		if RagdollFlag._prevent_when_leaving_moving_vehicle then SetPedConfigFlag(Ped, 32, false) end -- CPED_CONFIG_FLAG_WillFlyThroughWindscreen
 	end
 end
 
@@ -141,6 +165,7 @@ function UpdateTemporaryRagdollPrevention(Ped, RagdollFlag, InVehicle)
 			model = PedModel,
 			falling = false,
 			vehicle_exit = false,
+			vehicle_exit_fall = false,
 			was_in_vehicle = false,
 			last_vehicle_speed = 0.0
 		}
@@ -154,8 +179,17 @@ function UpdateTemporaryRagdollPrevention(Ped, RagdollFlag, InVehicle)
 	local Height = GetEntityHeightAboveGround(Ped)
 	local Velocity = GetEntityVelocity(Ped)
 	local IsParachuting = IsPedInParachuteFreeFall(Ped) or GetPedParachuteState(Ped) >= 0
+	if IsVarSetTrue(Vehicle) then
+		State.vehicle_exit_fall = false
+	elseif State.was_in_vehicle then
+		State.vehicle_exit_fall = true
+	elseif State.vehicle_exit_fall and not IsEntityInAir(Ped) and Height <= 1.25 then
+		State.vehicle_exit_fall = false
+	end
+
 	local FallingRisk = RagdollFlag._prevent_when_falling
 		and not IsVarSetTrue(Vehicle)
+		and not State.vehicle_exit_fall
 		and not IsParachuting
 		and not IsPedSwimming(Ped)
 		and not IsPedDeadOrDying(Ped, true)
@@ -213,10 +247,12 @@ function UpdateTemporaryRagdollPrevention(Ped, RagdollFlag, InVehicle)
 	end
 
 	local CanRagdoll = not (RagdollFlag.disable_all or State.falling or State.vehicle_exit)
-	if State.can_ragdoll ~= CanRagdoll then
+	if not CanRagdoll then
+		SetPedCanRagdoll(Ped, false)
+	elseif State.can_ragdoll ~= CanRagdoll then
 		SetPedCanRagdoll(Ped, CanRagdoll)
-		State.can_ragdoll = CanRagdoll
 	end
+	State.can_ragdoll = CanRagdoll
 end
 
 function CanControlNpcReaction(Ped, Vehicle)
@@ -282,6 +318,8 @@ function MaintainPedHealth(Ped, InvincibleFlag, RagdollFlag, InVehicle)
 end
 
 function KeepPedClean(Ped, KeepClean)
+	if CONFIG.WORLD.prevent_blood_pools then SetPedConfigFlag(Ped, 153, true) end -- CPED_CONFIG_FLAG_DisableBloodPoolCreation
+
 	if KeepClean then
 		ResetPedVisibleDamage(Ped)
 		ClearPedBloodDamage(Ped, true)
@@ -384,7 +422,7 @@ function SetWeaponHandling(Ped, Vehicle)
 		if CONFIG.WEAPONS.prevent_all_aim_fire then
 			SetPedConfigFlag(Ped, 122, true) -- CPED_CONFIG_FLAG_DisableMelee
 			SetPedConfigFlag(Ped, 186, true) -- CPED_CONFIG_FLAG_EnableWeaponBlocking
-			SetPedCombatAttributes(Ped, 1424, false) -- BF_PlayerCanUseFiringWeapons
+			SetCurrentPedWeapon(Ped, GetHashKey('weapon_unarmed'), true)
 		end
 	end
 	
@@ -460,8 +498,9 @@ function GetVehicleAllNpcsInside(Vehicle, ExcludeDriver)
 	if ExcludeDriver then StartSeat = 0 end
 	
 	for i = StartSeat, GetVehicleMaxNumberOfPassengers(Vehicle) do
-		if not IsVehicleSeatFree(Vehicle, i) and IsPedNpc(GetPedInVehicleSeat(Vehicle, i)) then
-			table.insert(NpcSeats, GetPedInVehicleSeat(Vehicle, i))
+		local Ped = GetPedInVehicleSeat(Vehicle, i)
+		if not IsVehicleSeatFree(Vehicle, i) and IsPedNpc(Ped) and not IsNpcCrewMember(Ped) then
+			table.insert(NpcSeats, Ped)
 		end
 	end
 	
@@ -494,6 +533,230 @@ function GetNearbyPeds(X, Y, Z, Radius, MaxNum)
 	end
 	
 	return NearbyPeds
+end
+
+function IsNpcCrewMember(Ped)
+	return DoesSetContain(NpcCrew, Ped)
+end
+
+function EnsureNpcCrewGroup()
+	local PlayerGroup = GetPedGroupIndex(PlayerPed)
+	if DoesGroupExist(PlayerGroup) then
+		NpcCrewGroup = PlayerGroup
+	elseif not DoesGroupExist(NpcCrewGroup) then
+		NpcCrewGroup = CreateGroup(0)
+		NpcCrewGroupCreated = true
+		SetGroupFormation(NpcCrewGroup, 0)
+		SetPedAsGroupLeader(PlayerPed, NpcCrewGroup)
+	end
+end
+
+function ApplyNpcCrewWeapons(Ped)
+	if CONFIG.WEAPONS.prevent_all_aim_fire or CONFIG.WEAPONS.remove_all_weapons == 2 then
+		RemoveAllPedWeapons(Ped, true)
+		SetPedConfigFlag(Ped, 122, true) -- CPED_CONFIG_FLAG_DisableMelee
+		SetPedConfigFlag(Ped, 186, true) -- CPED_CONFIG_FLAG_EnableWeaponBlocking
+		return
+	end
+
+	SetPedConfigFlag(Ped, 122, CONFIG.PLAYERS.disable_close_combat)
+	SetPedConfigFlag(Ped, 186, false)
+	if CONFIG.WEAPONS.restrict_to_permitted_only and IsPedArmed(Ped, 7) then
+		local Found, CurrentWeapon = GetCurrentPedWeapon(Ped, true)
+		if Found and not DoesSetContain(HandheldAllowWeapons, CurrentWeapon)
+			and CurrentWeapon ~= CONSTANT.ParachuteHash then
+			RemoveWeaponFromPed(Ped, CurrentWeapon)
+		end
+	end
+
+	if CONFIG.WEAPONS.auto_allocate_permitted and next(HandheldAllowWeapons) ~= nil then
+		local HasPermittedWeapon = false
+		for WeaponHash,_ in pairs(HandheldAllowWeapons) do
+			if HasPedGotWeapon(Ped, WeaponHash, false) then
+				HasPermittedWeapon = true
+				break
+			end
+		end
+		if not HasPermittedWeapon then
+			for WeaponHash,_ in pairs(HandheldAllowWeapons) do
+				GiveWeaponToPed(Ped, WeaponHash, 30, false, false)
+				break
+			end
+		end
+	end
+end
+
+function ApplyNpcCrewConfig(Ped)
+	if not DoesEntityExist(Ped) then return end
+
+	local Vehicle = GetVehiclePedIsIn(Ped, false)
+	local UsePlayerConfig = CONFIG.NPC.npc_crew_use_player_config
+	local Invincible = UsePlayerConfig and CONFIG.PLAYERS.invincible or CONFIG.NPC.invincible
+	local RagdollFlags = UsePlayerConfig and CONFIG.PLAYERS.prevent_ragdoll_flags or CONFIG.NPC.prevent_ragdoll_flags
+	local ClearInjuries = UsePlayerConfig and CONFIG.PLAYERS.clear_injuries or CONFIG.NPC.clear_injuries
+
+	SetPedInvincibleWithRagdoll(Ped, Invincible, RagdollFlags)
+	MaintainPedHealth(Ped, Invincible, RagdollFlags, Vehicle)
+	KeepPedClean(Ped, ClearInjuries)
+	SetPedCanBeDraggedOut(Ped, not (UsePlayerConfig and CONFIG.PLAYERS.cant_carjack or CONFIG.NPC.cant_carjack))
+	if UsePlayerConfig and CONFIG.PLAYERS.stick_to_vehicle or not UsePlayerConfig and CONFIG.NPC.stick_to_vehicle then
+		SetPedCanBeKnockedOffVehicle(Ped, 1)
+	end
+
+	if UsePlayerConfig then ApplyNpcCrewWeapons(Ped)
+	else SetWeaponHandling(Ped, Vehicle) end
+	if UsePlayerConfig and CONFIG.PLAYERS.auto_parachute and IsPedFalling(Ped)
+		and GetEntityHeightAboveGround(Ped) > 8 then
+		if not HasPedGotWeapon(Ped, CONSTANT.ParachuteHash, false) then
+			GiveWeaponToPed(Ped, CONSTANT.ParachuteHash, 1, false, false)
+		end
+		if IsPedInParachuteFreeFall(Ped) then ForcePedToOpenParachute(Ped) end
+	end
+	StopPedSpeaking(Ped, CONFIG.NPC.stop_speaking > 0)
+	DisablePedPainAudio(Ped, CONFIG.NPC.stop_speaking == 2)
+
+	local CanDefend = CONFIG.NPC.npc_crew_defend_player
+		and not CONFIG.WEAPONS.prevent_all_aim_fire
+		and (UsePlayerConfig or not CONFIG.NPC.non_combat)
+	SetCanAttackFriendly(Ped, false, false)
+	SetPedCombatAbility(Ped, CanDefend and 2 or 0)
+	SetPedCombatAttributes(Ped, 5, false) -- BF_AlwaysFight
+	SetPedCombatAttributes(Ped, 13, CanDefend) -- BF_Aggressive
+	SetPedCombatAttributes(Ped, 21, CanDefend) -- BF_CanChaseTargetOnFoot
+	SetPedCombatAttributes(Ped, 46, CanDefend) -- BF_CanFightArmedPedsWhenNotArmed
+	SetPedCombatAttributes(Ped, 50, CanDefend) -- BF_CanCharge
+	SetPedCombatAttributes(Ped, 58, not CanDefend) -- BF_DisableFleeFromCombat
+	SetBlockingOfNonTemporaryEvents(Ped, false)
+	SetPedConfigFlag(Ped, 26, false) -- CPED_CONFIG_FLAG_CanAttackFriendly
+	SetPedConfigFlag(Ped, 169, not CanDefend) -- CPED_CONFIG_FLAG_PreventAllMeleeTaunts
+	SetPedConfigFlag(Ped, 17, false) -- CPED_CONFIG_FLAG_BlockNonTemporaryEvents
+	SetPedConfigFlag(Ped, 24, not CanDefend) -- CPED_CONFIG_FLAG_IgnoreSeenMelee
+	SetPedConfigFlag(Ped, 128, CanDefend) -- CPED_CONFIG_FLAG_CanBeAgitated
+	SetPedConfigFlag(Ped, 294, not CanDefend) -- CPED_CONFIG_FLAG_DisableShockingEvents
+	SetPedConfigFlag(Ped, 422, not CanDefend) -- CPED_CONFIG_FLAG_DisableVehicleCombat
+end
+
+function AddNpcToCrew(Ped, ForceAdd)
+	if not CONFIG.NPC.npc_crew or not IsPedNpc(Ped) then return false end
+	if IsNpcCrewMember(Ped) then return true end
+	if not ForceAdd and TableLength(NpcCrew) >= CONFIG.NPC.npc_crew_max_size then
+		ShowNotification("~y~NPC crew is full", false, "npccrew")
+		return false
+	end
+
+	if NetworkGetEntityIsNetworked(Ped) and not NetworkHasControlOfEntity(Ped) then
+		local ControlTimeout = GetGameTimer() + 500
+		while not NetworkHasControlOfEntity(Ped) and GetGameTimer() < ControlTimeout do
+			NetworkRequestControlOfEntity(Ped)
+			Citizen.Wait(0)
+		end
+		if not NetworkHasControlOfEntity(Ped) then
+			ShowNotification("~r~Unable to recruit NPC", false, "npccrew")
+			return false
+		end
+	end
+
+	EnsureNpcCrewGroup()
+	NpcCrew[Ped] = {relationship = GetPedRelationshipGroupHash(Ped)}
+	SetEntityAsMissionEntity(Ped, true, true)
+	ClearPedTasksImmediately(Ped)
+	SetPedRelationshipGroupHash(Ped, GetPedRelationshipGroupHash(PlayerPed))
+	SetPedAsGroupMember(Ped, NpcCrewGroup)
+	SetPedNeverLeavesGroup(Ped, true)
+	SetPedCanTeleportToGroupLeader(Ped, true)
+	ApplyNpcCrewConfig(Ped)
+	ShowNotification("NPC joined crew", false, "npccrew")
+	return true
+end
+
+function RemoveNpcFromCrew(Ped, DeleteNpc)
+	if not IsNpcCrewMember(Ped) then return end
+	local CrewData = NpcCrew[Ped]
+	NpcCrew[Ped] = nil
+	TemporaryRagdollBlocks[Ped] = nil
+
+	if DoesEntityExist(Ped) then
+		RemovePedFromGroup(Ped)
+		SetPedNeverLeavesGroup(Ped, false)
+		SetPedCanTeleportToGroupLeader(Ped, false)
+		if DeleteNpc then
+			DeletePed(Ped)
+		else
+			if CrewData and CrewData.relationship then SetPedRelationshipGroupHash(Ped, CrewData.relationship) end
+			SetBlockingOfNonTemporaryEvents(Ped, false)
+			SetPedConfigFlag(Ped, 17, false) -- CPED_CONFIG_FLAG_BlockNonTemporaryEvents
+			SetPedConfigFlag(Ped, 24, false) -- CPED_CONFIG_FLAG_IgnoreSeenMelee
+			SetPedConfigFlag(Ped, 122, false) -- CPED_CONFIG_FLAG_DisableMelee
+			SetPedConfigFlag(Ped, 128, true) -- CPED_CONFIG_FLAG_CanBeAgitated
+			SetPedConfigFlag(Ped, 169, false) -- CPED_CONFIG_FLAG_PreventAllMeleeTaunts
+			SetPedConfigFlag(Ped, 186, false) -- CPED_CONFIG_FLAG_EnableWeaponBlocking
+			SetPedConfigFlag(Ped, 294, false) -- CPED_CONFIG_FLAG_DisableShockingEvents
+			SetPedConfigFlag(Ped, 422, false) -- CPED_CONFIG_FLAG_DisableVehicleCombat
+			RemoveFromSet(ProcessedPeds, Ped)
+			TaskWanderStandard(Ped, 10.0, 10)
+			SetEntityAsNoLongerNeeded(Ped)
+		end
+	end
+end
+
+function GetTargetNpcForCrew()
+	local PlayerCoords = GetEntityCoords(PlayerPed)
+	local PlayerForward = GetEntityForwardVector(PlayerPed)
+	local ClosestPed = 0
+	local ClosestDistance = tonumber(CONFIG.NPC.npc_crew_recruit_distance) or 5.0
+
+	for _,Ped in pairs(GetGamePool("CPed")) do
+		if IsPedNpc(Ped) and not IsPedDeadOrDying(Ped, true) and not IsPedInAnyVehicle(Ped, true) then
+			local PedCoords = GetEntityCoords(Ped)
+			local OffsetX = PedCoords.x - PlayerCoords.x
+			local OffsetY = PedCoords.y - PlayerCoords.y
+			local OffsetZ = PedCoords.z - PlayerCoords.z
+			local Distance = math.sqrt((OffsetX ^ 2) + (OffsetY ^ 2) + (OffsetZ ^ 2))
+			if Distance > 0.0 and Distance < ClosestDistance then
+				local Facing = ((OffsetX * PlayerForward.x) + (OffsetY * PlayerForward.y) + (OffsetZ * PlayerForward.z)) / Distance
+				if Facing > 0.15 and HasEntityClearLosToEntity(PlayerPed, Ped, 17) then
+					ClosestPed = Ped
+					ClosestDistance = Distance
+				end
+			end
+		end
+	end
+	return ClosestPed
+end
+
+function ToggleTargetNpcCrew()
+	local Ped = GetTargetNpcForCrew()
+	if not DoesEntityExist(Ped) then
+		ShowNotification("~y~No NPC selected", false, "npccrew")
+	elseif IsNpcCrewMember(Ped) then
+		RemoveNpcFromCrew(Ped, false)
+		ShowNotification("NPC left crew", false, "npccrew")
+	else
+		AddNpcToCrew(Ped, false)
+	end
+end
+
+function UpdateNpcCrew()
+	if not CONFIG.NPC.npc_crew then return end
+	if IsPedDeadOrDying(PlayerPed, true) then
+		for Ped,_ in pairs(NpcCrew) do RemoveNpcFromCrew(Ped, true) end
+		return
+	end
+
+	if next(NpcCrew) ~= nil then EnsureNpcCrewGroup() end
+	local PlayerCoords = GetEntityCoords(PlayerPed)
+	for Ped,_ in pairs(NpcCrew) do
+		if not DoesEntityExist(Ped) or IsPedDeadOrDying(Ped, true) then
+			RemoveNpcFromCrew(Ped, false)
+		else
+			local PedCoords = GetEntityCoords(Ped)
+			if Vdist(PlayerCoords.x, PlayerCoords.y, PlayerCoords.z, PedCoords.x, PedCoords.y, PedCoords.z) > CONFIG.NPC.npc_crew_max_distance then
+				RemoveNpcFromCrew(Ped, true)
+			else
+				ApplyNpcCrewConfig(Ped)
+			end
+		end
+	end
 end
 
 function CollectNpcPassengers(Vehicle, ForceLeave, HotkeySame)
@@ -601,6 +864,118 @@ function DropNpcPassengerOff(Vehicle)
 	end
 end
 
+function GetPassengerDriverStyle()
+	if not PassengerDriverStyles[PassengerDriverStyle] then PassengerDriverStyle = "NORMAL" end
+	return PassengerDriverStyles[PassengerDriverStyle]
+end
+
+function ResetPassengerDriverRoute()
+	PassengerDriverRoute.vehicle = 0
+	PassengerDriverRoute.has_waypoint = false
+	PassengerDriverRoute.arrived = false
+	PassengerDriverRoute.x = 0.0
+	PassengerDriverRoute.y = 0.0
+	PassengerDriverRoute.z = 0.0
+	PassengerDriverRoute.style = ""
+end
+
+function ApplyPassengerDriverStyle(Driver, Style)
+	SetDriverAggressiveness(Driver, Style.aggressiveness)
+	SetDriverAbility(Driver, 1.0)
+	SetDriverRacingModifier(Driver, Style.racing_modifier)
+	SetDriveTaskDrivingStyle(Driver, Style.driving_style)
+	SetDriveTaskCruiseSpeed(Driver, Style.speed)
+end
+
+function UpdatePassengerDriverRoute(ForceUpdate)
+	if not IsVarSetTrue(PlayerPassengerInVehicle) then return end
+
+	local Vehicle = PlayerPassengerInVehicle
+	local Driver = GetPedInVehicleSeat(Vehicle, -1)
+	if not DoesEntityExist(Vehicle) or not DoesEntityExist(Driver) or IsPedAPlayer(Driver) then
+		ResetPassengerDriverRoute()
+		return
+	end
+
+	local Style = GetPassengerDriverStyle()
+	local Waypoint = GetFirstBlipInfoId(8)
+	local HasWaypoint = CONFIG.VEHICLES.passenger_waypoint_driving and DoesBlipExist(Waypoint)
+
+	if HasWaypoint then
+		local Coords = GetBlipInfoIdCoord(Waypoint)
+		local VehicleCoords = GetEntityCoords(Vehicle)
+		local DistanceToWaypoint = math.sqrt(((VehicleCoords.x - Coords.x) ^ 2) + ((VehicleCoords.y - Coords.y) ^ 2))
+		local ArrivalRange = math.max(Style.stop_range, 40.0)
+		local WaypointChanged = PassengerDriverRoute.vehicle ~= Vehicle
+			or not PassengerDriverRoute.has_waypoint
+			or math.abs(PassengerDriverRoute.x - Coords.x) > 1.0
+			or math.abs(PassengerDriverRoute.y - Coords.y) > 1.0
+			or math.abs(PassengerDriverRoute.z - Coords.z) > 1.0
+		local Arrived = (PassengerDriverRoute.arrived and not WaypointChanged) or DistanceToWaypoint <= ArrivalRange
+		local RouteChanged = ForceUpdate or WaypointChanged or PassengerDriverRoute.style ~= PassengerDriverStyle
+
+		if WaypointChanged then ShowNotification("Driver following waypoint", false, "passengerwaypoint") end
+
+		if Arrived then
+			if not PassengerDriverRoute.arrived or WaypointChanged then
+				ClearPedTasks(Driver)
+				SetDriverAggressiveness(Driver, 0.0)
+				SetDriverRacingModifier(Driver, 0.0)
+				SetDriveTaskDrivingStyle(Driver, 786603)
+				SetDriveTaskCruiseSpeed(Driver, 0.0)
+				TaskVehicleTempAction(Driver, Vehicle, 27, 1100)
+				BringVehicleToHalt(Vehicle, 2.0, 1000, false)
+			end
+			if GetEntitySpeed(Vehicle) >= 1.0 then BringVehicleToHalt(Vehicle, 2.0, 1000, false) end
+			if GetEntitySpeed(Vehicle) < 1.0 then SetVehicleHandbrake(Vehicle, true) end
+			if not PassengerDriverRoute.arrived then d_print("NPC passenger driver reached waypoint.") end
+		elseif RouteChanged or PassengerDriverRoute.arrived then
+			SetVehicleHandbrake(Vehicle, false)
+			ApplyPassengerDriverStyle(Driver, Style)
+			TaskVehicleDriveToCoordLongrange(Driver, Vehicle, Coords.x, Coords.y, Coords.z, Style.speed, Style.driving_style, ArrivalRange)
+			d_print("NPC passenger driver heading to waypoint:  " .. dump(Coords))
+		end
+
+		PassengerDriverRoute.vehicle = Vehicle
+		PassengerDriverRoute.has_waypoint = true
+		PassengerDriverRoute.arrived = Arrived
+		PassengerDriverRoute.x = Coords.x
+		PassengerDriverRoute.y = Coords.y
+		PassengerDriverRoute.z = Coords.z
+		PassengerDriverRoute.style = PassengerDriverStyle
+	elseif PassengerDriverRoute.arrived and PassengerDriverRoute.vehicle == Vehicle then
+		SetDriveTaskCruiseSpeed(Driver, 0.0)
+		if GetEntitySpeed(Vehicle) >= 1.0 then BringVehicleToHalt(Vehicle, 2.0, 1000, false)
+		else SetVehicleHandbrake(Vehicle, true) end
+		PassengerDriverRoute.has_waypoint = false
+	elseif ForceUpdate or PassengerDriverRoute.has_waypoint or PassengerDriverRoute.vehicle ~= Vehicle then
+		if PassengerDriverRoute.has_waypoint then ShowNotification("Driver stopped following waypoint", false, "passengerwaypoint") end
+		SetVehicleHandbrake(Vehicle, false)
+		ApplyPassengerDriverStyle(Driver, Style)
+		TaskVehicleDriveWander(Driver, Vehicle, Style.speed, Style.driving_style)
+		PassengerDriverRoute.vehicle = Vehicle
+		PassengerDriverRoute.has_waypoint = false
+		PassengerDriverRoute.arrived = false
+		PassengerDriverRoute.style = PassengerDriverStyle
+		d_print("NPC passenger driver resuming wander.")
+	end
+end
+
+function CyclePassengerDriverStyle()
+	GetPassengerDriverStyle()
+	local CurrentIndex = 1
+	for Index,StyleName in ipairs(PassengerDriverStyleOrder) do
+		if StyleName == PassengerDriverStyle then CurrentIndex = Index end
+	end
+	CurrentIndex = CurrentIndex + 1
+	if CurrentIndex > #PassengerDriverStyleOrder then CurrentIndex = 1 end
+	PassengerDriverStyle = PassengerDriverStyleOrder[CurrentIndex]
+
+	local Style = GetPassengerDriverStyle()
+	ShowNotification("Driver style:  ~g~" .. Style.name, false, "passengerdriverstyle")
+	UpdatePassengerDriverRoute(true)
+end
+
 function SetNpcAsDriverForPlayer(Vehicle, SeatPlayerEntering)
 	if IsVarSetTrue(Vehicle) then
 		local Driver = GetPedInVehicleSeat(Vehicle, -1)
@@ -637,33 +1012,43 @@ function SetNpcAsDriverForPlayer(Vehicle, SeatPlayerEntering)
 				end
 				
 				Wait(1000)
-				TaskVehicleDriveWander(Driver, Vehicle, 10.0, 447)
-				d_print("Vehicle entered as passenger")
+				if PlayerVehicle.is_inside and PlayerVehicle.vehicle == Vehicle then
+					UpdatePassengerDriverRoute(true)
+					d_print("Vehicle entered as passenger")
+				end
 			end)
 		end
 		
 		PlayerPassengerInVehicle = Vehicle
 	elseif IsVarSetTrue(PlayerPassengerInVehicle) then
-		local Driver = GetPedInVehicleSeat(PlayerPassengerInVehicle, -1)
+		local PassengerVehicle = PlayerPassengerInVehicle
+		local Driver = GetPedInVehicleSeat(PassengerVehicle, -1)
+		local WasFollowingWaypoint = PassengerDriverRoute.has_waypoint
+		ResetPassengerDriverRoute()
+		PlayerPassengerInVehicle = 0
+		SetVehicleHandbrake(PassengerVehicle, false)
+		if WasFollowingWaypoint then ShowNotification("Driver stopped following waypoint", false, "passengerwaypoint") end
 		if DoesEntityExist(Driver) and not IsPedAPlayer(Driver) then
 			SetPedCanBeDraggedOut(Driver, not CONFIG.NPC.cant_carjack)
 			
-			SetEntityCleanupByEngine(PlayerPassengerInVehicle, true)
+			SetEntityCleanupByEngine(PassengerVehicle, true)
 			SetEntityCleanupByEngine(Driver, true)
-			
-			if not IsVehicleStopped(PlayerPassengerInVehicle) then
+
+			local Style = GetPassengerDriverStyle()
+			ApplyPassengerDriverStyle(Driver, Style)
+			if not IsVehicleStopped(PassengerVehicle) then
 				Citizen.CreateThread(function()
-					TaskVehicleTempAction(Driver, PlayerPassengerInVehicle, 6, 2)
+					TaskVehicleTempAction(Driver, PassengerVehicle, 6, 1000)
 					Wait(1000)
-					TaskVehicleDriveWander(Driver, PlayerPassengerInVehicle, 10.0, 447)
-					
-					PlayerPassengerInVehicle = 0
+					if DoesEntityExist(Driver) and DoesEntityExist(PassengerVehicle) then
+						TaskVehicleDriveWander(Driver, PassengerVehicle, Style.speed, Style.driving_style)
+					end
 				end)
+			else
+				TaskVehicleDriveWander(Driver, PassengerVehicle, Style.speed, Style.driving_style)
 			end
 			
 			d_print("Vehicle exited as passenger")
-		else
-			PlayerPassengerInVehicle = 0
 		end
 		
 		SetPedConfigFlag(PlayerPed, 184, false) -- CPED_CONFIG_FLAG_PreventAutoShuffleToDriversSeat
@@ -684,7 +1069,23 @@ end
 
 function TaskPlayerPerformFriendlyCarjack(Vehicle, Ped, NetworkPlayer)
 	local Player = NetworkPlayer or PlayerID
+	local EnteringDriverSeatFromPassengerSide = false
+	if Vehicle.seat == -1 and CONFIG.NPC.prevent_visual_carjack_passengers then
+		local DriverDoorPosition = GetEntryPositionOfDoor(Vehicle.vehicle, 0)
+		local PassengerDoorPosition = GetEntryPositionOfDoor(Vehicle.vehicle, 1)
+		local PedPosition = GetEntityCoords(Ped)
+		local DriverDoorDistance = #(PedPosition - DriverDoorPosition)
+		local PassengerDoorDistance = #(PedPosition - PassengerDoorPosition)
+		EnteringDriverSeatFromPassengerSide = PassengerDoorDistance < DriverDoorDistance
+	end
+
 	if Vehicle.is_entering and (not DoesSetContain(NetworkPlayerIsEnteringVehicle, Player) or NetworkPlayerIsEnteringVehicle[Player] ~= Vehicle.vehicle) then
+		local ExistingRequest = FriendlyCarjackRequests[Player]
+		if ExistingRequest then
+			if ExistingRequest.vehicle == Vehicle.vehicle and ExistingRequest.seat == Vehicle.seat then return end
+			ExistingRequest.cancelled = true
+		end
+
 		AddToSet(NetworkPlayerIsEnteringVehicle, Player, Vehicle.vehicle)
 		d_print("Player:  " .. Player .. " is attempting to enter vehicle:  " .. dump(Vehicle))
 		
@@ -700,50 +1101,120 @@ function TaskPlayerPerformFriendlyCarjack(Vehicle, Ped, NetworkPlayer)
 			
 			Citizen.CreateThread(function()
 				if CONFIG.NPC.prevent_visual_carjack < 3 then
-					if CONFIG.NPC.prevent_visual_carjack_passengers and Vehicle.seat == -1 then ForceAllNpcToLeaveVehicle(Vehicle.vehicle, true)
-					else DeletePed(PedInSeatPlayerEnt) end
+					DeletePed(PedInSeatPlayerEnt)
+					if EnteringDriverSeatFromPassengerSide then
+						local FrontPassenger = GetPedInVehicleSeat(Vehicle.vehicle, 0)
+						if DoesEntityExist(FrontPassenger) and not IsPedAPlayer(FrontPassenger) then
+							DeletePed(FrontPassenger)
+						end
+					end
 				end -- Delete ped in seat
 				if CONFIG.NPC.prevent_visual_carjack == 2 and not NetworkPlayer then TaskEnterVehicle(Ped, Vehicle.vehicle, 5, Vehicle.seat, 2.0, 16, 0) end -- Teleport to seat
 				if CONFIG.NPC.prevent_visual_carjack >= 3 then
+					local InterceptNativeCarjack = CONFIG.NPC.prevent_visual_carjack_intercept ~= false and not NetworkPlayer
+					local Request = {
+						vehicle = Vehicle.vehicle,
+						seat = Vehicle.seat,
+						occupant = PedInSeatPlayerEnt,
+						cancelled = false,
+						finished = false
+					}
+					FriendlyCarjackRequests[Player] = Request
+
+					if InterceptNativeCarjack then
+						ClearPedTasksImmediately(Ped)
+						TaskGoToEntity(Ped, Vehicle.vehicle, -1, 2.5, 2.0, 0.0, 0)
+					end
 					if CONFIG.NPC.prevent_visual_carjack == 4 and not NetworkPlayer then AnimatePed(Ped, {name = "wave_e", dict = "friends@frj@ig_1"}, 2000) end
-					
-					if Vehicle.seat ~= -1 then
-						TaskNpcLeaveVehicle(Vehicle.vehicle, Ped, false, 131072)
-					else
-						if not IsVehicleStopped(Vehicle.vehicle) then TaskVehicleTempAction(PedInSeatPlayerEnt, Vehicle.vehicle, 6, 2) end
-						
-						if CONFIG.NPC.prevent_visual_carjack_passengers then ForceAllNpcToLeaveVehicle(Vehicle.vehicle, false, true) end
-						
-						-- 0 = normal exit and closes door, 1 = normal exit and closes door, 16 = teleports outside, door kept closed, 64 = normal exit and closes door, maybe a bit slower animation than 0, 256 = normal exit but does not close the door, 4160 = ped is throwing himself out, even when the vehicle is still, 262144 = ped moves to passenger seat first, then exits normally  
-						--TaskLeaveVehicle(PedInSeatPlayerEnt, Vehicle.vehicle, 256)
-						TaskLeaveVehicle(PedInSeatPlayerEnt, Vehicle.vehicle, 131072)
-						
-						if not NetworkPlayer then
-							while GetVehiclePedIsIn(PedInSeatPlayerEnt, false) == Vehicle.vehicle do
-								Citizen.Wait(5) -- Wait for the NPC to get out
+
+					if Vehicle.seat == -1 and not IsVehicleStopped(Vehicle.vehicle) then TaskVehicleTempAction(PedInSeatPlayerEnt, Vehicle.vehicle, 6, 2) end
+
+					local BlockingPed = 0
+					if EnteringDriverSeatFromPassengerSide then
+						BlockingPed = GetPedInVehicleSeat(Vehicle.vehicle, 0)
+						if DoesEntityExist(BlockingPed) and not IsPedAPlayer(BlockingPed) then
+							TaskLeaveVehicle(BlockingPed, Vehicle.vehicle, 131072)
+						else
+							BlockingPed = 0
+						end
+					end
+
+					if InterceptNativeCarjack then
+						Citizen.CreateThread(function()
+							local NoCollisionTimeout = GetGameTimer() + 7000
+							while not Request.cancelled and not Request.finished
+								and DoesEntityExist(Ped) and GetGameTimer() < NoCollisionTimeout do
+								if DoesEntityExist(PedInSeatPlayerEnt) then
+									SetEntityNoCollisionEntity(Ped, PedInSeatPlayerEnt, true)
+									SetEntityNoCollisionEntity(PedInSeatPlayerEnt, Ped, true)
+								end
+								if DoesEntityExist(BlockingPed) then
+									SetEntityNoCollisionEntity(Ped, BlockingPed, true)
+									SetEntityNoCollisionEntity(BlockingPed, Ped, true)
+								end
+								Citizen.Wait(0)
 							end
+						end)
+					end
+
+					TaskLeaveVehicle(PedInSeatPlayerEnt, Vehicle.vehicle, 131072)
+
+					if not NetworkPlayer then
+						local LeaveTimeout = GetGameTimer() + 5000
+						while (DoesEntityExist(PedInSeatPlayerEnt) and GetVehiclePedIsIn(PedInSeatPlayerEnt, false) == Vehicle.vehicle
+							or DoesEntityExist(BlockingPed) and GetVehiclePedIsIn(BlockingPed, false) == Vehicle.vehicle)
+							and not Request.cancelled
+							and GetGameTimer() < LeaveTimeout do
+								local NewTarget = GetVehiclePedIsTryingToEnter(Ped)
+								if DoesEntityExist(NewTarget) and NewTarget ~= Vehicle.vehicle then
+									Request.cancelled = true
+									break
+								elseif InterceptNativeCarjack and NewTarget == Vehicle.vehicle then
+									ClearPedTasksImmediately(Ped)
+									TaskGoToEntity(Ped, Vehicle.vehicle, -1, 2.5, 2.0, 0.0, 0)
+								end
+								Citizen.Wait(25)
+						end
+
+						if GetVehiclePedIsIn(PedInSeatPlayerEnt, false) == Vehicle.vehicle then Request.cancelled = true end
+						if DoesEntityExist(BlockingPed) and GetVehiclePedIsIn(BlockingPed, false) == Vehicle.vehicle then Request.cancelled = true end
+						local NewTarget = GetVehiclePedIsTryingToEnter(Ped)
+						if DoesEntityExist(NewTarget) and NewTarget ~= Vehicle.vehicle then Request.cancelled = true end
+
+						if not Request.cancelled and DoesEntityExist(PedInSeatPlayerEnt) then
 							ClearPedTasksImmediately(PedInSeatPlayerEnt)
 							
-							--Citizen.CreateThread(function()
-								if CONFIG.NPC.prevent_visual_carjack == 4 then
-									Citizen.CreateThread(function()
-										TaskGotoEntityOffsetXy(PedInSeatPlayerEnt, Vehicle.vehicle, 5000, 0.0, 20.0, 0.0, 2.0, true)
+							if CONFIG.NPC.prevent_visual_carjack == 4 then
+								Citizen.CreateThread(function()
+									TaskGotoEntityOffsetXy(PedInSeatPlayerEnt, Vehicle.vehicle, 5000, 0.0, 20.0, 0.0, 2.0, true)
 										
-										Citizen.Wait(4000)
+									Citizen.Wait(4000)
 										
-										TaskWanderStandard(PedInSeatPlayerEnt, 10.0, 10) -- Prevents npc reclaiming vehicle
-										AnimatePed(PedInSeatPlayerEnt, {name = "thumbs_up", dict = "anim@mp_player_intcelebrationmale@thumbs_up"})
-									end)
-								else
 									TaskWanderStandard(PedInSeatPlayerEnt, 10.0, 10) -- Prevents npc reclaiming vehicle
-								end
-								d_print("Forcing previous driver NPC to wander.")
-							--end)
-							
+									AnimatePed(PedInSeatPlayerEnt, {name = "thumbs_up", dict = "anim@mp_player_intcelebrationmale@thumbs_up"})
+								end)
+							else
+								TaskWanderStandard(PedInSeatPlayerEnt, 10.0, 10) -- Prevents npc reclaiming vehicle
+							end
+							d_print("Forcing previous driver NPC to wander.")
+						end
+						if not Request.cancelled and DoesEntityExist(BlockingPed) then
+							ClearPedTasksImmediately(BlockingPed)
+							TaskWanderStandard(BlockingPed, 10.0, 10)
+						end
+
+						if not Request.cancelled then
+							ClearPedTasksImmediately(Ped)
+							TaskEnterVehicle(Ped, Vehicle.vehicle, 5000, Vehicle.seat, 2.0, 1, 0)
+
 							local Timeout = 10
 							local InvalidateRequest = false
-							while GetPedVehicleSeat(Ped, Vehicle.vehicle) ~= Vehicle.seat and Timeout > 0 do
+							while not Request.cancelled and GetPedVehicleSeat(Ped, Vehicle.vehicle) ~= Vehicle.seat and Timeout > 0 do
 								Citizen.Wait(5)
+								if Request.cancelled then
+									InvalidateRequest = true
+									break
+								end
 								if RunEveryX(5, false, "checkisentering") then
 									Timeout = Timeout - 2
 									
@@ -754,27 +1225,32 @@ function TaskPlayerPerformFriendlyCarjack(Vehicle, Ped, NetworkPlayer)
 										break
 									end
 									
-									if GetVehiclePedIsEntering(Ped) ~= Vehicle.vehicle
+									if not Request.cancelled
+										and GetVehiclePedIsEntering(Ped) ~= Vehicle.vehicle
 										and GetVehiclePedIsTryingToEnter(Ped) ~= Vehicle.vehicle
 										and GetVehiclePedIsIn(Ped, false) ~= Vehicle.vehicle then
 											d_print("Task enter vehicle timed out, resending command")
 											ClearPedTasksImmediately(Ped)
-											TaskEnterVehicle(Ped, Vehicle.vehicle, 1000, -1, 2.0, 1, 0)
+											TaskEnterVehicle(Ped, Vehicle.vehicle, 1000, Vehicle.seat, 2.0, 1, 0)
 									end
 								end
 							end
 							
 							-- Overcome issue with player ped getting back out once inside jacked vehicle, as well as other issues with getting in vehicle normally
-							if not InvalidateRequest then
+							if not Request.cancelled and not InvalidateRequest then
 								-- MORE TESING REQUIRED
 								--ClearPedTasksImmediately(Ped)
-								TaskWarpPedIntoVehicle(Ped, Vehicle.vehicle, -1)
+								TaskWarpPedIntoVehicle(Ped, Vehicle.vehicle, Vehicle.seat)
 								--SetPedIntoVehicle(Ped, Vehicle.vehicle, -1)
 								--SetPedKeepTask(Ped, true)
 								SetVehicleDoorsShut(Vehicle.vehicle, false)
 							end
 						end
+
 					end
+
+					Request.finished = true
+					if FriendlyCarjackRequests[Player] == Request then FriendlyCarjackRequests[Player] = nil end
 				end	
 			end)
 		end
@@ -1153,7 +1629,7 @@ function CloneVehicle(ForceModelByName, ForceFacing)
 			clone_entity = CloneEntity,
 			force_model = ForceModelByName,
 			model_name = ModelName,
-			coords = Coords,
+			coords = {x = Coords.x, y = Coords.y, z = Coords.z},
 			heading = Heading,
 			speed = GetEntitySpeed(PlayerPed),
 			teleport_inside = TeleportInside,
@@ -1226,6 +1702,7 @@ function GetVehiclePedIsInOrEntering(Ped)
 				local PassengerCapacity = 0
 				local VehicleColour = nil
 				if PedVehicle.is_inside then
+					SetHornEnabled(PedVehicle.vehicle, true)
 					PassengerCapacity = GetVehicleMaxNumberOfPassengers(PedVehicle.vehicle)
 					if CONFIG.VEHICLES.lock_player_vehicle_colour then VehicleColour = CONSTANT.COLOURS[CONFIG.VEHICLES.lock_primary_colour_to] end
 				end
@@ -1885,6 +2362,10 @@ end
 
 
 AddEventHandler('onClientResourceStop', function(resource)
+	if resource == GetCurrentResourceName() then
+		for Ped,_ in pairs(NpcCrew) do RemoveNpcFromCrew(Ped, true) end
+		if NpcCrewGroupCreated and DoesGroupExist(NpcCrewGroup) then RemoveGroup(NpcCrewGroup) end
+	end
 	TriggerServerEvent('ResourceStopped', resource)
 end)
 --------------------------------
@@ -1936,6 +2417,14 @@ local ComboKeyPressed = {
 		[2] = false
 	},
 	["enter_as_passenger"] = {
+		[1] = false,
+		[2] = false
+	},
+	["passenger_driver_style"] = {
+		[1] = false,
+		[2] = false
+	},
+	["npc_crew"] = {
 		[1] = false,
 		[2] = false
 	},
@@ -2026,6 +2515,12 @@ function RunHotkey(RunFunction, ComboButton, RunOnExit, OnlyRunIfClear)
 				if not PlayerVehicle.is_inside then
 					TaskPlayerEnterVehicleAsPassenger()
 				end
+			elseif RunFunction == "passenger_driver_style" then
+				if PlayerVehicle.is_inside and PlayerVehicle.seat ~= -1 and PlayerPassengerInVehicle == PlayerVehicle.vehicle then
+					CyclePassengerDriverStyle()
+				end
+			elseif RunFunction == "npc_crew" then
+				if not PlayerVehicle.is_inside and not PlayerVehicle.is_entering then ToggleTargetNpcCrew() end
 			elseif RunFunction == "simple_emote" then
 				if not PlayerVehicle.is_inside and not PlayerVehicle.is_entering then
 					AnimatePed(PlayerPed, CONSTANT.EMOTES[math.random(#CONSTANT.EMOTES)])
@@ -2214,6 +2709,32 @@ if CONFIG.VEHICLES.enter_as_passenger then
 		true
 	)
 	RecordCommand("Enter as passenger", 0x14F280B6, 0xD491BA12, 0xE35BD7A6)
+end
+
+if CONFIG.VEHICLES.enter_as_passenger then
+	SetHotkeys(
+		"passenger_driver_style",
+		CONFIG.VEHICLES.passenger_driver_style_controller_hotkey_combo_1,
+		CONFIG.VEHICLES.passenger_driver_style_controller_hotkey_combo_2,
+		CONFIG.VEHICLES.passenger_driver_style_keyboard_hotkey,
+		"Change passenger driver style",
+		false,
+		true
+	)
+	RecordCommand("Change passenger driver style", nil, nil, nil)
+end
+
+if CONFIG.NPC.npc_crew then
+	SetHotkeys(
+		"npc_crew",
+		CONFIG.NPC.npc_crew_controller_hotkey_combo_1,
+		CONFIG.NPC.npc_crew_controller_hotkey_combo_2,
+		CONFIG.NPC.npc_crew_keyboard_hotkey,
+		"Add or remove NPC crew member",
+		false,
+		true
+	)
+	RecordCommand("Add or remove NPC crew member", nil, nil, nil)
 end
 
 -- Simple emote
@@ -2735,6 +3256,9 @@ Citizen.CreateThread(function()
 				AddToSet(ProcessedVehicles, PlayerVehicle.vehicle)
 			elseif PlayerVehicle.is_inside then
 				DisplaySpeedo()
+				if PlayerVehicle.seat ~= -1 and PlayerPassengerInVehicle == PlayerVehicle.vehicle then
+					UpdatePassengerDriverRoute(false)
+				end
 				
 				if CONFIG.VEHICLES.disable_radio > 0 or (CONFIG.VEHICLES.radio_driver_only and PlayerVehicle.seat ~= -1) then
 					if IsVehicleRadioEnabled(PlayerVehicle.vehicle) or GetPlayerRadioStationName() ~= nil then
@@ -2849,10 +3373,29 @@ Citizen.CreateThread(function()
 					
 						if CONFIG.NPC.non_combat then
 							SetPedCombatAbility(NpcPed, 0)
+							SetPedConfigFlag(NpcPed, 26, false) -- CPED_CONFIG_FLAG_CanAttackFriendly
+							SetPedConfigFlag(NpcPed, 169, true) -- CPED_CONFIG_FLAG_PreventAllMeleeTaunts
 							SetPedCombatAttributes(NpcPed, 17, not CONFIG.NPC.prevent_fleeing) -- Peds flee instead of fighting when fleeing is allowed
 							SetPedCombatAttributes(NpcPed, 2, false) -- BF_CanDoDrivebys
+							SetPedCombatAttributes(NpcPed, 5, false) -- BF_AlwaysFight
+							SetPedCombatAttributes(NpcPed, 13, false) -- BF_Aggressive
+							SetPedCombatAttributes(NpcPed, 21, false) -- BF_CanChaseTargetOnFoot
+							SetPedCombatAttributes(NpcPed, 41, false) -- BF_CanCommandeerVehicles
+							SetPedCombatAttributes(NpcPed, 46, false) -- BF_CanFightArmedPedsWhenNotArmed
+							SetPedCombatAttributes(NpcPed, 50, false) -- BF_CanCharge
+							SetPedCombatAttributes(NpcPed, 54, false) -- BF_AlwaysEquipBestWeapon
 							SetPedConfigFlag(NpcPed, 422, true) -- CPED_CONFIG_FLAG_DisableVehicleCombat
 							SetDriverAggressiveness(NpcPed, 0.0)
+						end
+
+						if CONFIG.NPC.prevent_fleeing then
+							SetPedCombatAttributes(NpcPed, 17, false) -- BF_AlwaysFlee
+							SetPedCombatAttributes(NpcPed, 58, true) -- BF_DisableFleeFromCombat
+							SetPedConfigFlag(NpcPed, 118, false) -- CPED_CONFIG_FLAG_RunFromFiresAndExplosions
+						end
+
+						if CONFIG.NPC.prevent_visual_carjack >= 3 then
+							SetPedConfigFlag(NpcPed, 134, true) -- CPED_CONFIG_FLAG_PreventPedFromReactingToBeingJacked
 						end
 
 						if CONFIG.NPC.ignore_players == 2 then
@@ -2863,6 +3406,8 @@ Citizen.CreateThread(function()
 							SetPedHearingRange(NpcPed, 0.0)
 							SetBlockingOfNonTemporaryEvents(NpcPed, true)
 							SetPedCombatAttributes(NpcPed, 20, false) -- BF_CanTauntInVehicle
+							SetPedCombatAttributes(NpcPed, 68, true) -- BF_DisableReactToBuddyShot
+							SetPedCombatAttributes(NpcPed, 77, true) -- BF_DisableRespondedToThreatBroadcast
 							SetPedConfigFlag(NpcPed, 17, true) -- CPED_CONFIG_FLAG_BlockNonTemporaryEvents
 							SetPedConfigFlag(NpcPed, 24, true) -- CPED_CONFIG_FLAG_IgnoreSeenMelee
 							SetPedConfigFlag(NpcPed, 128, false) -- CPED_CONFIG_FLAG_CanBeAgitated
@@ -2870,15 +3415,14 @@ Citizen.CreateThread(function()
 							SetPedConfigFlag(NpcPed, 208, true) -- CPED_CONFIG_FLAG_DisableExplosionReactions
 							SetPedConfigFlag(NpcPed, 209, false) -- CPED_CONFIG_FLAG_DodgedPlayer
 							SetPedConfigFlag(NpcPed, 225, true) -- CPED_CONFIG_FLAG_DisablePotentialToBeWalkedIntoResponse
-							SetPedConfigFlag(NpcPed, 226, true) -- CPED_CONFIG_FLAG_DisablePedAvoidance
 							SetPedConfigFlag(NpcPed, 294, true) -- CPED_CONFIG_FLAG_DisableShockingEvents
-							if IsVarSetTrue(NpcVehicle) then SetHornEnabled(NpcVehicle, false) end
 						end
 						
 						if CONFIG.NPC.prevent_evasive_driving then
 							if IsVarSetTrue(NpcVehicle) then SetVehicleCanBeUsedByFleeingPeds(NpcVehicle, false) end
 							SetPedCanEvasiveDive(NpcPed, false)
 							SetPedConfigFlag(NpcPed, 39, true) -- CPED_CONFIG_FLAG_DisableEvasiveDives
+							SetPedConfigFlag(NpcPed, 172, false) -- CPED_CONFIG_FLAG_CanDiveAwayFromApproachingVehicles
 							SetPedConfigFlag(NpcPed, 229, true) -- CPED_CONFIG_FLAG_DisablePanicInVehicle
 							SetPedConfigFlag(NpcPed, 359, false) -- CPED_CONFIG_FLAG_IsDuckingInVehicle
 						end
@@ -2890,10 +3434,14 @@ Citizen.CreateThread(function()
 					end
 					if RunPurgeProcessed then AddToSet(PurgeProcessedPeds, NpcPed) end
 					
-					MaintainPedHealth(NpcPed, CONFIG.NPC.invincible, CONFIG.NPC.prevent_ragdoll_flags, NpcVehicle)	
-					KeepPedClean(NpcPed, CONFIG.NPC.clear_injuries)
-					if RunOncePerSec then SetWeaponHandling(NpcPed, NpcVehicle) end
-					if RunOncePerSec then UpdateNpcReaction(NpcPed, NpcVehicle) end
+					if IsNpcCrewMember(NpcPed) then
+						ApplyNpcCrewConfig(NpcPed)
+					else
+						MaintainPedHealth(NpcPed, CONFIG.NPC.invincible, CONFIG.NPC.prevent_ragdoll_flags, NpcVehicle)
+						KeepPedClean(NpcPed, CONFIG.NPC.clear_injuries)
+						if RunOncePerSec then SetWeaponHandling(NpcPed, NpcVehicle) end
+						if RunOncePerSec then UpdateNpcReaction(NpcPed, NpcVehicle) end
+					end
 					
 					if CONFIG.NPC.stop_speaking > 0 then
 						if IsAnySpeechPlaying(NpcPed) then
@@ -2914,7 +3462,7 @@ Citizen.CreateThread(function()
 							end
 						end
 						
-						if CONFIG.NPC.del_disturbing_peds or CONFIG.NPC.del_minimal_clothing_peds then
+						if not IsNpcCrewMember(NpcPed) and (CONFIG.NPC.del_disturbing_peds or CONFIG.NPC.del_minimal_clothing_peds) then
 							local PedHash = GetEntityModel(NpcPed)
 							if DoesSetContain(CONSTANT.RESTRICTED_PEDS, PedHash) then
 								if (CONFIG.NPC.del_disturbing_peds and CONSTANT.RESTRICTED_PEDS[PedHash] == 1)
@@ -2925,8 +3473,10 @@ Citizen.CreateThread(function()
 							end
 						end
 					end
+
 				end
 			end
+			if RunOncePerSec then UpdateNpcCrew() end
 			
 			if RunOncePerSec then
 				if CONFIG.VEHICLES.invincible == 2 or CONFIG.VEHICLES.repair_damage == 2 then

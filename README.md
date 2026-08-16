@@ -34,7 +34,8 @@ Extra features:
 * Clone vehicle (hotkey or trainer)
 * Simple emote (hotkey) - plays one of several select emotes on each press
 * Simple taxi - when the player presses their horn (/ defined hotkey), NPCs will enter their vehicle and after a while will pay for their ride and leave
-* Enter an NPC's vehicle as a passenger
+* Enter an NPC's vehicle as a passenger and direct the NPC driver using map waypoints
+* Recruit nearby NPCs to follow the player as a configurable crew
 * Change time and weather
 * Quick spawn vehicles (hotkey)
 

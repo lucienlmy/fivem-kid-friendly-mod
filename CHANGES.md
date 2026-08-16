@@ -1,5 +1,21 @@
 # FiveM Kid Friendly Mod Change List
 
+**v0.4.0**
+* Added waypoint-controlled driving when riding as a passenger with an NPC driver
+* Added selectable NPC passenger-driver styles with a configurable default and hotkeys
+* Added recruitable NPC crews with following, vehicle, distance cleanup, player-config inheritance and optional defence handling
+* Fixed vehicle spawn validation incorrectly rejecting coordinates
+* Fixed an invalid NPC combat attribute causing intermittent client warnings
+* Improved non-combat, flee prevention and strong ignore-player behaviour using valid NPC combat attributes
+* Added behaviour-specific ped flags for ragdoll, blood pool, fleeing, evasive and friendly carjack handling
+* Fixed vehicle-exit and carjack tasks being able to re-enable ragdoll on protected peds
+* Kept vehicle-exit and falling ragdoll prevention independent when either option is disabled
+* Improved friendly carjacking by cancelling the native carjack task before asking the targeted NPC to leave
+* Added an option to disable native carjack interception independently of friendly carjack levels
+* Allowed players to retarget another vehicle while a friendly carjack is being handled
+* Limited passenger-side handling to NPCs occupying the target seat or blocking entry to it
+* Temporarily disabled collision between the player and exiting friendly-carjack NPCs
+
 **v0.3.0**
 * Added configurable replacement of ambient NPC models
 * Expanded and revised the restricted ped model list (thanks to Jaralus)
@@ -13,7 +29,7 @@
 * Added timeouts and validation to player model and vehicle spawn requests
 * Added basic validation to server network events
 * Updated controller key mappings to use FiveM's analog-button mapper for better compatibility
-* Changed `HOTKEY_VER` to `_v2` so the updated controller defaults reach existing installations without conflicting with `_ver2`
+* Changed `HOTKEY_VER` to `_v2` so the key mappings don't clash
 * Corrected the `max_wanted_level` and `prevent_visual_carjack_passengers` config names
 * Fixed loading-screen handover checks, dynamic text escaping and mixed-content font loading
 * Replaced fixed loading-screen tab options with an ordered, extensible `tabs` array

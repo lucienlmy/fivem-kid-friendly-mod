@@ -1,5 +1,5 @@
 ---------------------------------------------------------------------------------------------------
-------------------------------------------------------------------------------------------ver0.3---
+------------------------------------------------------------------------------------------ver0.4---
 -- KID FRIENDLY MOD for FiveM by Jackson92 --------------------------------------------------------
 ---------------------------------------------------------------------------------------------------
 -- Github:	https://github.com/92jackson/fivem-kid-friendly-mod -------------------------------
@@ -121,10 +121,20 @@ CONFIG = {
 		auto_parachute = true, -- Give the ped a parachute if falling
 		cant_carjack = false, -- Stops players from being able to take any NPC occupied vehicle
 		prevent_visual_carjack = 3, -- 0 = Off/default, 1 = Delete NPC to prevent drag-out animation, 2 = Delete the NPC and teleport into the seat (MOST RELIABLE), 3 = NPC leaves the vehicle on their own and player walks to seat (most visually pleasing, but will sometimes still drag-out), 4 = Like 3, but even more friendly (buggy v0.2)
+			prevent_visual_carjack_intercept = true, -- With levels 3 and 4, cancel the native carjack while the NPC leaves voluntarily
 			prevent_visual_carjack_passengers = true, -- Only effective if CONFIG.NPC.prevent_visual_carjack is enabled. Prevents the drag-out animation if the player's target seat is the driver's seat, but they enter from the passenger side
 		cant_target = false, -- Prevents the player from being able to target the NPC
 		prevent_evasive_driving = true, -- Prevents NPC drivers from panic-driving, independently of NPC.prevent_fleeing
 		non_combat = true, -- Prevents NPCs from attacking or retaliating. NPCs can still flee unless NPC.prevent_fleeing is true
+		npc_crew = true, -- Allows nearby NPCs to be recruited to follow the player
+			npc_crew_controller_hotkey_combo_1 = "R3_INDEX", -- (R3)
+			npc_crew_controller_hotkey_combo_2 = "",
+			npc_crew_keyboard_hotkey = "G", -- (G)
+			npc_crew_max_size = 3,
+			npc_crew_recruit_distance = 5.0,
+			npc_crew_max_distance = 100.0, -- Crew members further away than this will be removed
+			npc_crew_use_player_config = true, -- Apply relevant player health, ragdoll and weapon settings to crew members
+			npc_crew_defend_player = false, -- Allow crew members to defend the player when the active weapon and combat settings permit it
 		del_disturbing_peds = true, -- Deletes any inappropriate NPC peds
 		del_minimal_clothing_peds = true, -- Deletes any NPC peds which have little clothing (only wearing small bikinis/underwear)
 		prevent_ragdoll_flags = {
@@ -222,7 +232,12 @@ CONFIG = {
 		enter_as_passenger = true, -- With the use of a hotkey set below, this allows you to enter the closest vehicle as a passenger. Only works for non-police cars and motorbikes while not already inside a vehicle
 			enter_passenger_controller_hotkey_combo_1 = "L3_INDEX", -- (L3)
 			enter_passenger_controller_hotkey_combo_2 = "",
-			enter_passenger_keyboard_hotkey = "NUMPADENTER" -- (NUMPAD ENTER)
+			enter_passenger_keyboard_hotkey = "NUMPADENTER", -- (NUMPAD ENTER)
+			passenger_waypoint_driving = true, -- NPC drivers will drive to the player's map waypoint and resume wandering if it is removed
+			passenger_driver_style_controller_hotkey_combo_1 = "L3_INDEX", -- (L3)
+			passenger_driver_style_controller_hotkey_combo_2 = "",
+			passenger_driver_style_keyboard_hotkey = "NUMPADENTER", -- (NUMPAD ENTER)
+			default_passenger_driver_style = "NORMAL" -- NORMAL, CAREFUL, BRISK, RECKLESS
 	},
 	
 --	Time, weather, blood pooling, ambient sounds and door locks
