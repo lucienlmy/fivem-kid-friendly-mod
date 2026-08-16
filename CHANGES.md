@@ -1,5 +1,9 @@
 # FiveM Kid Friendly Mod Change List
 
+**v0.4.1**
+* Fixed NPC model replacement causing the client to crash when ambient peds spawned
+* Prevented shared passenger-entry and NPC-crew hotkeys from triggering both actions
+
 **v0.4.0**
 * Added waypoint-controlled driving when riding as a passenger with an NPC driver
 * Added selectable NPC passenger-driver styles with a configurable default and hotkeys

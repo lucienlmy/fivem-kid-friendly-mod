@@ -4,7 +4,7 @@ game 'gta5'
 description 'Inspired by FFFR for GTA5 SP, this mod gives server owners the ability to limit/supress/remove game mechanics not suitable for their target audience, as well as providing features which make the game easier to play for that audience. This mod was originally developed to provide a child-friendly experience for both of my sons.'
 
 author 'Jackson92'
-version '0.4.0'
+version '0.4.1'
 
 dependencies {
 	'/onesync',

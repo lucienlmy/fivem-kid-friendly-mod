@@ -66,6 +66,7 @@ local NpcCrewGroup = 0
 local NpcCrewGroupCreated = false
 local RunPurgeProcessed = false
 local PlayerPassengerInVehicle = 0
+local PassengerEntryRequestUntil = 0
 local PassengerDriverStyle = string.upper(tostring(CONFIG.VEHICLES.default_passenger_driver_style or "NORMAL"))
 local PassengerDriverStyleOrder = {"NORMAL", "CAREFUL", "BRISK", "RECKLESS"}
 local PassengerDriverStyles = {
@@ -727,7 +728,7 @@ end
 function ToggleTargetNpcCrew()
 	local Ped = GetTargetNpcForCrew()
 	if not DoesEntityExist(Ped) then
-		ShowNotification("~y~No NPC selected", false, "npccrew")
+		return
 	elseif IsNpcCrewMember(Ped) then
 		RemoveNpcFromCrew(Ped, false)
 		ShowNotification("NPC left crew", false, "npccrew")
@@ -1062,9 +1063,13 @@ function TaskPlayerEnterVehicleAsPassenger()
 		local Seat = GetVehicleFirstFreeSeat(ClosestVehicle, true)
 		
 		if Seat > -1 then
+			PassengerEntryRequestUntil = GetGameTimer() + 1000
 			SetNpcAsDriverForPlayer(ClosestVehicle, Seat)
+			ShowNotification("Entering vehicle as passenger", false, "enterpassenger")
+			return true
 		end
 	end
+	return false
 end
 
 function TaskPlayerPerformFriendlyCarjack(Vehicle, Ped, NetworkPlayer)
@@ -1283,17 +1288,7 @@ AddEventHandler('populationPedCreating', function(x, y, z, model, setters)
 		or (CONFIG.NPC.replace_peds == 2 and DoesSetContain(CONSTANT.RESTRICTED_PEDS, model)))
 		and next(SPAWN_ITEMS.PEDS) ~= nil then
 		local NewModel, Name = GetFromSetAtPosX(SPAWN_ITEMS.PEDS, math.random(TableLength(SPAWN_ITEMS.PEDS)))
-		
 		RequestModel(NewModel)
-		local LoadTimeout = GetGameTimer() + 5000
-		while not HasModelLoaded(NewModel) and GetGameTimer() < LoadTimeout do
-			Citizen.Wait(0)
-		end
-
-		if not HasModelLoaded(NewModel) then
-			d_print("Failed to load replacement ped model:  " .. tostring(NewModel), 3)
-			return
-		end
 		
 		d_print("Swapping ped model " .. tostring(model) .. " with model: " .. Name .. ", location: " .. tostring(x) .. ", " .. tostring(y) .. ", " .. tostring(z), 1)
 
@@ -2520,7 +2515,8 @@ function RunHotkey(RunFunction, ComboButton, RunOnExit, OnlyRunIfClear)
 					CyclePassengerDriverStyle()
 				end
 			elseif RunFunction == "npc_crew" then
-				if not PlayerVehicle.is_inside and not PlayerVehicle.is_entering then ToggleTargetNpcCrew() end
+				if not PlayerVehicle.is_inside and not PlayerVehicle.is_entering
+					and GetGameTimer() > PassengerEntryRequestUntil then ToggleTargetNpcCrew() end
 			elseif RunFunction == "simple_emote" then
 				if not PlayerVehicle.is_inside and not PlayerVehicle.is_entering then
 					AnimatePed(PlayerPed, CONSTANT.EMOTES[math.random(#CONSTANT.EMOTES)])
@@ -3180,7 +3176,7 @@ Citizen.CreateThread(function()
 	end]]--
 	
 	if not GetIsLoadingScreenActive() then PlayerSpawnReady = true end
-	
+
 	if CONFIG.NPC.replace_peds > 0 and next(SPAWN_ITEMS.PEDS) ~= nil then
 		for model,name in pairs(SPAWN_ITEMS.PEDS) do
 			AddToSet(TrustedPedModels, GetHashKey(model))
